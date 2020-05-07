@@ -1,0 +1,261 @@
+---
+title: "Run Vision on totalVI outputs for SLN-all"
+output: html_notebook
+---
+
+Zoë Steier
+
+* Dataset: SLN-all (spleen and lymph node, two days, two panels)
+* Run vision on totalVI outputs
+* Signature analysis for inteferon response
+
+# Preprocessing and creating metadata
+## Load required packages
+
+```{r Load required packages}
+
+library(VISION)
+library(tidyverse)
+library(viridis)
+
+```
+
+## Load count data and totalVI results
+
+```{r Read csvs saved from anndata}
+totalvi_path <- "/data/yosef2/users/zsteier/totalVI/totalVI_journal/spleen_lymph_all/totalVI/"
+
+latent <- read_csv(gzfile(str_c(totalvi_path, "latent.csv.gz")))
+umap_totalVI <- read_csv(gzfile(str_c(totalvi_path, "umap.csv.gz")))
+denoised_proteins <- read_csv(gzfile(str_c(totalvi_path, "denoised_proteins.csv.gz")))
+raw_proteins <- read_csv(gzfile(str_c(totalvi_path, "raw_proteins.csv.gz")))
+totalVI_genes <- read_csv(gzfile(str_c(totalvi_path, "totalVI_genes.csv.gz")))
+totalVI_proteins <- read_csv(gzfile(str_c(totalvi_path, "totalVI_proteins.csv.gz")))
+raw_genes <- read_csv(gzfile(str_c(totalvi_path, "raw_genes.csv.gz")))
+obs <- read_csv(gzfile(str_c(totalvi_path, "obs.csv.gz")), col_types = cols(annotations = "c", leiden_subclusters = "c"))
+
+```
+
+## Extract totalVI data
+
+```{r Parse totalVI data}
+# Data to extract: clusters and metadata, UMAP, denoised proteins, latent space, raw RNA, raw proteins
+
+# totalVI umap
+totalvi_umap <- as.data.frame(umap_totalVI[,-1])
+colnames(totalvi_umap) <- c("UMAP1", "UMAP2")
+row.names(totalvi_umap) <- make.unique(obs$X1, sep = "-")
+
+# totalVI latent space
+totalvi_latent <- as.matrix(latent[,-1])
+row.names(totalvi_latent) <- make.unique(obs$X1, sep = "-")
+
+
+# totalVI Leiden clusters and metadata
+totalVI_meta <- obs %>%
+  select(tissue = 'seurat_hash_id', batch = 'batch_indices', "annotations", "leiden_subclusters", UMIs_RNA = "n_RNA_counts", 
+         UMIs_protein = "n_protein_counts", 'n_genes', 'n_proteins', 'percent_mito', contains("leiden_")) %>%
+  mutate_at(vars(contains("leiden_")), as_factor) %>%
+  mutate_at(vars(contains("annotations")), as_factor) %>%
+  mutate_at(c("batch"), as_factor)
+
+# Add mouse labels to metadata
+totalVI_meta <- totalVI_meta %>%
+  mutate(mouse = case_when(
+    batch %in% c("0","2") ~ "Mouse1",
+    batch %in% c("1","3") ~ "Mouse2")) %>%
+  select(tissue, batch, mouse, everything())
+
+# Make metadata dataframe
+totalVI_metadata <- as.data.frame(totalVI_meta)
+row.names(totalVI_metadata) <- make.unique(obs$X1, sep = "-")
+
+
+# totalVI denoised proteins, (use in proteinData in Vision)
+denoised_proteins_df <- as.data.frame(denoised_proteins[-1])
+row.names(denoised_proteins_df) <- make.unique(obs$X1, sep = "-")
+colnames(denoised_proteins_df) <- totalVI_proteins[, 2][[1]]
+
+# Raw gene expression data (for signature analysis)
+raw_genes_df <- as.data.frame(raw_genes[,-1])
+row.names(raw_genes_df) <- make.unique(obs$X1, sep = "-")
+colnames(raw_genes_df) <- totalVI_genes[, 2][[1]]
+
+# Raw proteins (use in proteinData in Vision)
+raw_proteins_df <- as.data.frame(raw_proteins[,-1])
+row.names(raw_proteins_df) <- make.unique(obs$X1, sep = "-")
+colnames(raw_proteins_df) <- totalVI_proteins[, 2][[1]]
+
+# rename raw columns to start with "raw"
+totalVI_proteins <- totalVI_proteins %>%
+  mutate(raw_name = str_c("raw_", totalVI_proteins$`0`))
+raw_proteins <- raw_proteins[,-1]
+colnames(raw_proteins) <- totalVI_proteins$raw_name
+raw_proteins_df <- as.data.frame(raw_proteins)
+row.names(raw_proteins_df) <- make.unique(obs$X1, sep = "-")
+
+# Add raw proteins to the denoised proteins so they can both be visualized
+all_proteins <- cbind(denoised_proteins_df, raw_proteins_df)
+dim(all_proteins) # shape is cells x proteins
+```
+
+# Run vision
+```{r Get gene signatures}
+# Signatures can be downloaded from MSigDB or made from previous data
+
+signatures <- c(
+  "/data/yosef2/users/david.detomaso/Signatures/MSIGDB/H_Hallmark.gmt",
+  "/data/yosef2/users/david.detomaso/Signatures/Yoseflab/netPath.gmt", 
+  "/data/yosef2/users/david.detomaso/Signatures/Yoseflab/signatures_NY_private.gmt",
+  "/data/yosef2/users/david.detomaso/Signatures/CellType/haemopedia.gmt",
+  "/data/yosef2/users/david.detomaso/Signatures/CellType/ciberSortSigs.gmt"
+)
+
+```
+
+
+```{r Make RNA matrix}
+# library-size normalization of raw RNA data
+n.umi = median(colSums(t(raw_genes_df)))
+expr = apply(t(raw_genes_df), 2, function(x) (x * n.umi) / (sum(x) + 1))
+
+# use all genes in vision (they were pre-filtered)
+projection_genes <- row.names(expr)
+```
+
+
+```{r Make Vision object}
+
+# Make vision object
+vis <- Vision(expr,
+              signatures = signatures,
+              meta = totalVI_metadata,  
+              projection_genes = projection_genes,
+              proteinData = all_proteins,
+              projection_methods = c("UMAP"),
+              latentSpace = totalvi_latent,
+              name = "totalVI-intersect: murine spleen and lymph nodes (SLN-all)") 
+
+# Add totalVI UMAP to object
+vis = addProjection(vis, name = "UMAP_totalVI", coordinates = totalvi_umap[,1:2]) # Add totalVI latent space UMAP as a projection
+
+# Save object (can be analyzed separately)
+saveRDS(vis, "/data/yosef2/users/zsteier/totalVI/totalVI_journal/spleen_lymph_all/Vision/Vision_SLNall_public/vis_object_unanalyzed.rds")
+
+# Analyze with Vision
+options(mc.cores = 10)
+vis <- analyze(vis)
+
+# Save vision results
+saveRDS(vis, 'vision_object_analyzed.rds')
+
+```
+
+
+# Vision signature analysis
+
+```{r Load analyzed vision object}
+vis <- readRDS("/data/yosef2/users/zsteier/totalVI/totalVI_journal/spleen_lymph_all/Vision/Vision_SLNall_public/vision_object_analyzed.rds")
+```
+
+```{r Subset cells}
+leiden_subclusters <- vis@metaData$leiden_subclusters
+
+# All cells (remove doublets and low quality cells)
+clusters_to_remove = c("16,0", "17", "19", "21", "23", "24,0", "24,2", "25", "29")
+
+# B cells
+Bclusters = c("1", "3", "4", "5", "7", "8", "9", "11", "13")
+
+```
+
+
+```{r Plot interferon signatures}
+
+sigscores <- as_tibble(vis@SigScores) %>%
+  mutate("leiden_subclusters" = leiden_subclusters)
+totalvi_umap <- as_tibble(vis@Projections$UMAP_totalVI)
+
+sigdata <- cbind(totalvi_umap, sigscores)
+
+signatures_to_plot <- c("HALLMARK_INTERFERON_ALPHA_RESPONSE", "HALLMARK_INTERFERON_GAMMA_RESPONSE")
+
+# For all cells
+for (sig in signatures_to_plot) {
+  sigcolor <- sigdata %>% 
+    filter(!(leiden_subclusters %in% clusters_to_remove)) %>%
+    select(sig)
+
+  g <- ggplot(data = sigdata %>% filter(!(leiden_subclusters %in% clusters_to_remove)), aes(x = UMAP1, y = UMAP2, color = sigcolor[[1]])) +
+    ggrastr::geom_point_rast(stroke = 0, size = .5, raster.dpi = 300) +
+    scale_color_viridis(limits = quantile(sigcolor[[1]], c(.01, .99)), oob = scales::squish) +
+    labs(subtitle = sig, color = "") +
+    coord_fixed() +
+    theme_classic()
+  print(g)
+  ggsave(str_c("/data/yosef2/users/zsteier/totalVI/totalVI_journal/spleen_lymph_all/Vision/Vision_spleenLNall/figures/", sig, "_allcells.pdf"))
+}
+
+
+# For B cells
+for (sig in signatures_to_plot) {
+  sigcolor <- sigdata %>% 
+    filter((leiden_subclusters %in% Bclusters)) %>%
+    filter(UMAP1 < -1.1) %>%
+    select(sig)
+
+  g <- ggplot(data = sigdata %>% filter(leiden_subclusters %in% Bclusters) %>% filter(UMAP1 < -1.1), aes(x = UMAP1, y = UMAP2, color = sigcolor[[1]])) +
+    ggrastr::geom_point_rast(stroke = 0, size = .85, raster.dpi = 300) +
+    scale_color_viridis(limits = quantile(sigcolor[[1]], c(.01, .99)), oob = scales::squish) +
+    labs(subtitle = sig, color = "") +
+    coord_fixed() +
+    theme_classic()
+  print(g)
+  ggsave(str_c("/data/yosef2/users/zsteier/totalVI/totalVI_journal/spleen_lymph_all/Vision/Vision_spleenLNall/figures/", sig, "_Bcells.pdf"))
+}
+```
+
+# sessionInfo()
+```{r}
+sessionInfo()
+```
+
+R version 3.6.2 (2019-12-12)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: Ubuntu 16.04.6 LTS
+
+Matrix products: default
+BLAS:   /usr/lib/atlas-base/atlas/libblas.so.3.0
+LAPACK: /usr/lib/atlas-base/atlas/liblapack.so.3.0
+
+locale:
+ [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C               LC_TIME=en_US.UTF-8        LC_COLLATE=en_US.UTF-8     LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8   
+ [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                  LC_ADDRESS=C               LC_TELEPHONE=C             LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C       
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] viridis_0.5.1     viridisLite_0.3.0 forcats_0.4.0     stringr_1.4.0     dplyr_0.8.3       purrr_0.3.3       readr_1.3.1       tidyr_1.0.0       tibble_2.1.3     
+[10] ggplot2_3.2.1     tidyverse_1.3.0   Seurat_3.1.1      VISION_2.0.0     
+
+loaded via a namespace (and not attached):
+  [1] readxl_1.3.1        backports_1.1.5     plyr_1.8.4          igraph_1.2.4.2      lazyeval_0.2.2      splines_3.6.2       listenv_0.7.0       usethis_1.5.1      
+  [9] fastICA_1.2-2       digest_0.6.23       htmltools_0.4.0     gdata_2.18.0        plumber_0.4.6       memoise_1.1.0       magrittr_1.5        cluster_2.1.0      
+ [17] ROCR_1.0-7          remotes_2.1.0       globals_0.12.4      modelr_0.1.5        RcppParallel_4.4.4  matrixStats_0.55.0  R.utils_2.9.0       prettyunits_1.0.2  
+ [25] colorspace_1.4-1    rvest_0.3.5         ggrepel_0.8.1       haven_2.2.0         xfun_0.11           callr_3.3.2         sparsesvd_0.2       crayon_1.3.4       
+ [33] jsonlite_1.6.1      zeallot_0.1.0       survival_3.1-7      zoo_1.8-6           ape_5.3             glue_1.3.1          gtable_0.3.0        leiden_0.3.1       
+ [41] pkgbuild_1.0.6      future.apply_1.3.0  scales_1.1.0        DBI_1.0.0           bibtex_0.4.2        Rcpp_1.0.3          metap_1.1           reticulate_1.13    
+ [49] loe_1.1             rsvd_1.0.2          mclust_5.4.5        SDMTools_1.1-221.1  tsne_0.1-3          htmlwidgets_1.5.1   httr_1.4.1          gplots_3.0.1.1     
+ [57] RColorBrewer_1.1-2  ellipsis_0.3.0      ica_1.0-2           farver_2.0.1        pkgconfig_2.0.3     R.methodsS3_1.7.1   uwot_0.1.4          dbplyr_1.4.2       
+ [65] labeling_0.3        tidyselect_0.2.5    rlang_0.4.4         reshape2_1.4.3      later_1.0.0         munsell_0.5.0       pbmcapply_1.5.0     cellranger_1.1.0   
+ [73] tools_3.6.2         cli_1.1.0           generics_0.0.2      devtools_2.2.1      broom_0.5.2         ggridges_0.5.1      evaluate_0.14       yaml_2.2.0         
+ [81] npsurv_0.4-0        processx_3.4.1      knitr_1.26          fs_1.3.1            fitdistrplus_1.0-14 caTools_1.17.1.2    RANN_2.6.1          pbapply_1.4-2      
+ [89] future_1.15.0       nlme_3.1-142        mime_0.9            wordspace_0.2-6     ggrastr_0.1.7       R.oo_1.23.0         xml2_1.2.2          compiler_3.6.2     
+ [97] rstudioapi_0.10     plotly_4.9.1        png_0.1-7           testthat_2.3.0      lsei_1.2-0          reprex_0.3.0        stringi_1.4.5       ps_1.3.0           
+[105] desc_1.2.0          lattice_0.20-38     Matrix_1.2-17       vegan_2.5-6         permute_0.9-5       vctrs_0.2.0         pillar_1.4.2        lifecycle_0.1.0    
+[113] Rdpack_0.11-0       lmtest_0.9-37       RcppAnnoy_0.0.14    data.table_1.12.6   cowplot_1.0.0       bitops_1.0-6        irlba_2.3.3         gbRd_0.4-11        
+[121] httpuv_1.5.2        R6_2.4.1            promises_1.1.0      KernSmooth_2.23-16  gridExtra_2.3       sessioninfo_1.1.1   codetools_0.2-16    pkgload_1.0.2      
+[129] MASS_7.3-51.5       gtools_3.8.1        assertthat_0.2.1    rprojroot_1.3-2     withr_2.1.2         sctransform_0.2.0   iotools_0.2-5       mgcv_1.8-31        
+[137] parallel_3.6.2      hms_0.5.2           grid_3.6.2          rmarkdown_1.17      Cairo_1.5-11        logging_0.10-108    Rtsne_0.15          base64enc_0.1-3    
+[145] lubridate_1.7.4
