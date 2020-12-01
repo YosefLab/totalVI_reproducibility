@@ -1,2 +1,2 @@
-,Local metric,Mixing metric,Hotspot metric,models
-totalVI-union,,-0.0710488015896269,1.5749426665448707,totalVI-union
+,Local metric,Mixing metric,Hotspot metric,Clustering metric,models
+totalVI-union,,-0.06834480487825846,1.0731997350716571,0.03555044498104019,totalVI-union
