@@ -9,7 +9,10 @@ This notebook will produce the object `sln_all_intersect_post_adata.h5ad` that c
 This notebook produces cell type annotations of SLN-all.
 
 ### 3. `comparative_analysis/Bcell_analysis.ipynb`
-Produces Figure 5a-j and Supplementary Figure 16a-d.
+Produces Figure 5a-j and Extended Data Figure 10a-d.
 
 ### 4. `Vision/Vision_SLNall_public.ipynb`
-Produces Supplementary Figure 15a-d and a Vision object that can be explored interactively.
+Produces Supplementary Figure 5a-d and a Vision object that can be explored interactively.
+
+### 5. `comparative_analysis/LibrarySize_FeatureAutocorrelation.ipynb`
+Produces Supplementary Figures 9a,b and 10a-i.
