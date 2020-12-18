@@ -1,0 +1,220 @@
+---
+title: "Demultiplex hashtags in SLN208_D2 (Lane 13)"
+output: html_notebook
+---
+
+Zoë Steier
+
+Required inputs: 
+  outs_dir (aggregated 10x output)
+
+1. Create metadata
+2. Demultiplexing hashtags with Seurat
+3. Save outputs for totalVI
+
+# Preprocessing and creating metadata
+
+## Load packages and data
+```{r Load required packages}
+library(Seurat)
+library(tidyverse)
+library(Matrix)
+```
+
+
+```{r Load feature-barcode matrix from cellranger output}
+# Matrix contains genes and proteins
+outs_dir <- "/data/yosef2/users/zsteier/TotalSeq/20190814_BioLegend_ZRS08/cellranger_out/13_B6_spl_LN_r5_206/outs/"
+
+matrix_dir <- str_c(outs_dir, "filtered_feature_bc_matrix/")
+barcode.path <- paste0(matrix_dir, "barcodes.tsv.gz")
+features.path <- paste0(matrix_dir, "features.tsv.gz")
+matrix.path <- paste0(matrix_dir, "matrix.mtx.gz")
+mat <- readMM(file = matrix.path) # Sparse dgTMatrix (genes x cells)
+feature.names <- read.delim(features.path, # Features are the genes
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+barcode.names <- read.delim(barcode.path, # Barcodes are the cells
+                           header = FALSE,
+                           stringsAsFactors = FALSE)
+```
+
+## Preprocess data into matrices
+
+```{r Separate RNA, ADT, and HTO into separate matrices}
+# Currently they are in a single matrix. Genes are first, followed by proteins.
+num_proteins <- sum(grepl("Antibody Capture", feature.names$V3)) 
+num_features <- dim(feature.names)[1]
+
+# Make protein matrix
+protein_features <- feature.names[(num_features - num_proteins + 1):num_features,]
+protein_mat <- mat[(num_features - num_proteins + 1):num_features,]
+colnames(protein_mat) <- barcode.names[,]
+row.names(protein_mat) <- protein_features[,"V2"]
+
+# Separatae ADT and HTO into two matrices
+hto_start <- grep("HTO", row.names(protein_mat))[1] # find first protein name that is an HTO 
+ADT_mat <- protein_mat[1:(hto_start - 1), ]
+HTO_mat <- protein_mat[hto_start:num_proteins,] # HTOs are at the end
+
+# Make rna matrix
+gene_features <- feature.names[1:(num_features - num_proteins),]
+mat <- mat[1:(num_features - num_proteins),]
+```
+
+
+```{r Convert ensembl IDs into gene symbols}
+# Get gene names from the feature.names. Not all gene names are unique, so take the summed expression.
+# feature.names$V2 are gene names, $V1 are ensembl ids
+
+# Create expression matrix with unique gene symbols
+
+#' exp is expression matrix
+#'
+#' gene_symbol is a character vector, length is rows of exp
+#'   contains symbol for gene for each row
+#' ensemble_id is a character vector, length is rows of exp
+#'   contains unique ensemble id for each row
+agg_sparse_mat <- function(exp, gene_symbol, ensemble_id){
+  #  (gene_symbol x gene_id) x (genes_id x cells) = (gene_symbol x cells)
+  unique_symbols <- sort(unique(gene_symbol))
+  ens_id <- seq(length(ensemble_id))
+  unique_id <- match(gene_symbol, unique_symbols) 
+  aggMat <- sparseMatrix(i = unique_id, j = ens_id,
+                         dims = c(length(unique_symbols), length(ensemble_id)),
+                         dimnames = list(unique_symbols, ensemble_id))
+  exp_sym <- aggMat %*% exp 
+  return(exp_sym)
+}
+
+# Apply the function to generate a matrix of unique gene symbol row names (sparse format)
+exp_sym <- agg_sparse_mat(exp = mat, gene_symbol = gene_features$V2, ensemble_id = gene_features$V1)
+colnames(exp_sym) <- barcode.names[,] # add column names as cell barcodes
+```
+
+
+```{r Dimensions of feature-barcode matrix}
+dim(mat)
+dim(exp_sym)
+dim(ADT_mat)
+dim(HTO_mat)
+```
+
+# Make Seurat object and demultiplex
+
+## Make seurat object
+
+```{r Make Seurat object and add RNA}
+# Setup Seurat object starting with RNA
+seurat_obj <- CreateSeuratObject(counts = exp_sym)
+
+# Normalize RNA data with log normalization
+seurat_obj <- NormalizeData(seurat_obj)
+
+# Find and scale variable features
+seurat_obj <- FindVariableFeatures(seurat_obj, assay = "RNA", selection.method = "mean.var.plot")
+
+# Scale RNA
+seurat_obj <- ScaleData(seurat_obj, features = VariableFeatures(seurat_obj))
+```
+
+```{r Add protein data}
+# Add protein data as a new assay independent from RNA
+seurat_obj[["ADT"]] <- CreateAssayObject(counts = ADT_mat) # Feature names can't have "_", replaces with "-"
+
+# Normalize ADT data, here we use centered log-ratio (CLR) transformation
+seurat_obj <- NormalizeData(seurat_obj, assay = "ADT", normalization.method = "CLR")
+
+# Scale ADT data
+seurat_obj <- ScaleData(seurat_obj, assay = "ADT")
+
+# See https://github.com/satijalab/seurat/blob/c9f2660ee6b88189acc3ff4aa6088a46a2558dd3/R/preprocessing.R for CLR method. margin = 1
+```
+
+
+```{r Add hashatag data}
+seurat_obj[["HTO"]] <- CreateAssayObject(counts = HTO_mat)
+
+# Normalize HTO data, here we use centered log-ratio (CLR) transformation
+seurat_obj <- NormalizeData(seurat_obj, assay = "HTO", normalization.method = "CLR")
+
+```
+
+## Demultiplex
+
+```{r Demultiplex hashatgs with kmeans}
+seurat_obj <- HTODemux(seurat_obj, assay = "HTO", positive.quantile = 0.95, kfunc = "kmeans") # default is clara
+table(seurat_obj$HTO_classification.global)
+Idents(seurat_obj) <- "hash.ID"
+FeatureScatter(seurat_obj, feature1 = "HTO-B6-LN-r4-206-A0301", feature2 = "HTO-B6-spl-r4-206-A0302")
+```
+
+Parameters: kmeans, 0.95 (quantile above negative cells in NB distribution)
+Cutoff for HTO-B6-LN-r4-206-A0301 : 13 reads
+Cutoff for HTO-B6-spl-r4-206-A0302 : 31 reads
+
+ Doublet Negative  Singlet 
+     458      796     7667 
+     
+     
+
+```{r Plot HTO results}
+Idents(seurat_obj) <- "hash.ID"
+RidgePlot(seurat_obj, assay = "HTO", features = rownames(seurat_obj[["HTO"]])[1:2], ncol = 2)
+```
+
+
+```{r Heatmap of HTO results}
+HTOHeatmap(seurat_obj, assay = "HTO")
+
+```
+
+```{r Violin plot of HTO results}
+Idents(seurat_obj) <- "HTO_classification.global"
+VlnPlot(seurat_obj, features = "nCount_RNA", pt.size = 0.1, log = TRUE)
+```
+
+# Save output
+
+```{r Save hashtag labels}
+#### Note: hashtag order is the opposite of spleenLN206
+# 111: spleen is hash1, LN is hash2
+# 206: spleen is hash2, LN is hash1
+
+# Add tissue labels and save hash metadata
+table(seurat_obj@meta.data$hash.ID)
+
+tissue <- tibble(Cell_BC = row.names(seurat_obj@meta.data), hash.ID = seurat_obj@meta.data$hash.ID) %>%
+  mutate(Hash_ID = str_replace(str_replace(hash.ID, "HTO-B6-LN-r4-206-A0301", "Lymph_Node"), "HTO-B6-spl-r4-206-A0302", "Spleen")) %>%
+  select(-hash.ID)
+
+table(tissue$Hash_ID)
+
+# Save metadata
+write_csv(tissue, "spleenLN206_day2/hashtag_labels.csv")
+
+```
+
+```{r Save seurat object}
+# Add hashtag labels to seurat object
+seurat_obj <- AddMetaData(seurat_obj, tissue$Hash_ID, col.name = "Hash_label")
+
+saveRDS(seurat_obj, "spleenLN206_day2/seurat_obj.rds")
+
+```
+
+
+## Create concatenated labels for two days SLN111
+
+```{r Concatenate and save labels}
+day1 <- read_csv("/data/yosef2/users/zsteier/totalVI/totalVI_journal/notebooks_zoe/Seurat_demux/spleenLN206_day1/hashtag_labels.csv")
+day2 <- read_csv("/data/yosef2/users/zsteier/totalVI/totalVI_journal/notebooks_zoe/Seurat_demux/spleenLN206_day2/hashtag_labels.csv")
+
+concat_days <- rbind(day1, day2)
+
+```
+
+```{r Save concatenated output}
+# This is the result that will be used for downstream analysis
+write_csv(concat_days, "/data/yosef2/users/zsteier/totalVI/totalVI_journal/data/metadata/spleenLN111/hashtag_labels.csv")
+```
