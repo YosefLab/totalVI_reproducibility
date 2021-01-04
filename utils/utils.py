@@ -8,7 +8,13 @@ import torch
 from tqdm.auto import tqdm
 import statsmodels.api as sm
 import phenograph
-from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score
+from sklearn.metrics import (
+    adjusted_rand_score,
+    adjusted_mutual_info_score,
+    fowlkes_mallows_score,
+    silhouette_score,
+    silhouette_samples,
+)
 import hotspot
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
@@ -143,7 +149,7 @@ def entropy_batch_mixing(
     return score / float(n_pools)
 
 
-def clustering_metric(
+def clustering_metric_silhoutte(
     adata1,
     adata2,
     adata,
@@ -152,6 +158,7 @@ def clustering_metric(
     k=30,
     use_rep="X_pca",
     resolution=0.8,
+    n_clusters=25,
 ):
 
     sc.pp.neighbors(adata1, n_neighbors=k, use_rep=use_rep, metric=metric)
@@ -163,39 +170,25 @@ def clustering_metric(
 
     sc.tl.leiden(adata1, key_added="leiden_clus_metric", resolution=resolution)
     sc.tl.leiden(adata2, key_added="leiden_clus_metric", resolution=resolution)
-    sc.tl.leiden(adata_joint_1, key_added="leiden_clus_metric", resolution=resolution)
-    sc.tl.leiden(adata_joint_2, key_added="leiden_clus_metric", resolution=resolution)
 
-    cluster1 = adata1.obs["leiden_clus_metric"].values
-    cluster2 = adata2.obs["leiden_clus_metric"].values
+    cluster1 = adata1.obs["leiden_clus_metric"].astype(int).values
+    cluster2 = adata2.obs["leiden_clus_metric"].astype(int).values
 
-    cluster1_joint = np.array(adata_joint_1.obs["leiden_clus_metric"])
-    cluster2_joint = np.array(adata_joint_2.obs["leiden_clus_metric"])
-
-    batch1_ari = adjusted_rand_score(cluster1, cluster1_joint)
-    batch2_ari = adjusted_rand_score(cluster2, cluster2_joint)
-    batch1_mi = adjusted_mutual_info_score(cluster1, cluster1_joint)
-    batch2_mi = adjusted_mutual_info_score(cluster2, cluster2_joint)
-
-    return batch1_ari, batch2_ari, batch1_mi, batch2_mi
-
-
-def clustering_metric_old(latent1, latent2, latent, batchid, metric="euclidean", k=30):
-    cluster1, _, _ = phenograph.cluster(latent1, primary_metric=metric, k=k)
-    cluster2, _, _ = phenograph.cluster(latent2, primary_metric=metric, k=k)
-    cluster1_joint, _, _ = phenograph.cluster(
-        latent[batchid == 0, :], primary_metric=metric, k=k
+    batch1_score = silhouette_samples(
+        adata_joint_1.uns["neighbors"]["distances"], cluster1
     )
-    cluster2_joint, _, _ = phenograph.cluster(
-        latent[batchid == 1, :], primary_metric=metric, k=k
+    batch2_score = silhouette_samples(
+        adata_joint_2.uns["neighbors"]["distances"], cluster2
     )
 
-    batch1_ari = adjusted_rand_score(cluster1, cluster1_joint)
-    batch2_ari = adjusted_rand_score(cluster2, cluster2_joint)
-    batch1_mi = adjusted_mutual_info_score(cluster1, cluster1_joint)
-    batch2_mi = adjusted_mutual_info_score(cluster2, cluster2_joint)
+    batch1_score_same = silhouette_score(adata1.uns["neighbors"]["distances"], cluster1)
 
-    return batch1_ari, batch2_ari, batch1_mi, batch2_mi
+    batch2_score_same = silhouette_score(adata2.uns["neighbors"]["distances"], cluster2)
+
+    return (
+        np.mean(batch1_score - batch1_score_same),
+        np.mean(batch2_score - batch2_score_same),
+    )
 
 
 def hotspot_score(
@@ -261,129 +254,6 @@ def hotspot_score(
     res2 = np.mean((hs_joint_2_results - hs_2_results)["Z"])
 
     return 0.5 * (res1 + res2), hs_joint_1_results, hs_1_results
-
-
-def JaccardIndex(x1, x2):
-    intersection = np.sum(x1 * x2)
-    union = np.sum((x1 + x2) > 0)
-    return intersection / union
-
-
-def KNNJaccardIndex(
-    latent1,
-    latent2,
-    latent,
-    batchid,
-    nn,
-    subsample=False,
-    max_number=30000,
-    metric="minkowski",
-):
-    if subsample == True:
-        n_samples = len(latent)
-        keep_idx = np.random.choice(
-            np.arange(n_samples), size=min(len(latent), max_number), replace=False
-        )
-        batch0size = np.sum(batchid == 0)
-        keep_idx1 = keep_idx[keep_idx < batch0size]
-        keep_idx2 = keep_idx[keep_idx >= batch0size] - batch0size
-        latent1 = latent1[keep_idx1]
-        latent2 = latent2[keep_idx2]
-        latent, batchid = latent[keep_idx], batchid[keep_idx]
-    knn = NearestNeighbors(n_neighbors=nn, algorithm="auto", n_jobs=8, metric=metric)
-    nbrs1 = knn.fit(latent1)
-    nbrs1 = nbrs1.kneighbors_graph(latent1).toarray()
-    np.fill_diagonal(nbrs1, 0)
-    nbrs2 = knn.fit(latent2)
-    nbrs2 = nbrs2.kneighbors_graph(latent2).toarray()
-    np.fill_diagonal(nbrs2, 0)
-    nbrs_1 = knn.fit(latent[batchid == 0, :])
-    nbrs_1 = nbrs_1.kneighbors_graph(latent[batchid == 0, :]).toarray()
-    np.fill_diagonal(nbrs_1, 0)
-    nbrs_2 = knn.fit(latent[batchid == 1, :])
-    nbrs_2 = nbrs_2.kneighbors_graph(latent[batchid == 1, :]).toarray()
-    np.fill_diagonal(nbrs_2, 0)
-    JI1 = np.median([JaccardIndex(x1, x2) for x1, x2 in zip(nbrs1, nbrs_1)])
-    JI2 = np.median([JaccardIndex(x1, x2) for x1, x2 in zip(nbrs2, nbrs_2)])
-    print(JI1, JI2)
-    return min(JI1, JI2)
-
-
-def KNNJaccardIndexThree(
-    latent1, latent2, latent3, latent, batchid, nn, subsample=False, max_number=30000
-):
-    if subsample == True:
-        n_samples = len(latent)
-        keep_idx = np.random.choice(
-            np.arange(n_samples), size=min(len(latent), max_number), replace=False
-        )
-        batch0size = np.sum(batchid == 0)
-        keep_idx1 = keep_idx[keep_idx < batch0size]
-        keep_idx2 = keep_idx[keep_idx >= batch0size] - batch0size
-        latent1 = latent1[keep_idx1]
-        latent2 = latent2[keep_idx2]
-        latent, batchid = latent[keep_idx], batchid[keep_idx]
-    knn = NearestNeighbors(n_neighbors=nn, algorithm="auto", n_jobs=8)
-    nbrs1 = knn.fit(latent1)
-    nbrs1 = nbrs1.kneighbors_graph(latent1).toarray()
-    np.fill_diagonal(nbrs1, 0)
-    nbrs2 = knn.fit(latent2)
-    nbrs2 = nbrs2.kneighbors_graph(latent2).toarray()
-    np.fill_diagonal(nbrs2, 0)
-    nbrs3 = knn.fit(latent3)
-    nbrs3 = nbrs3.kneighbors_graph(latent3).toarray()
-    np.fill_diagonal(nbrs3, 0)
-    nbrs_1 = knn.fit(latent[batchid == 0, :])
-    nbrs_1 = nbrs_1.kneighbors_graph(latent[batchid == 0, :]).toarray()
-    np.fill_diagonal(nbrs_1, 0)
-    nbrs_2 = knn.fit(latent[batchid == 1, :])
-    nbrs_2 = nbrs_2.kneighbors_graph(latent[batchid == 1, :]).toarray()
-    np.fill_diagonal(nbrs_2, 0)
-    nbrs_3 = knn.fit(latent[batchid == 2, :])
-    nbrs_3 = nbrs_3.kneighbors_graph(latent[batchid == 2, :]).toarray()
-    np.fill_diagonal(nbrs_3, 0)
-    JI1 = [JaccardIndex(x1, x2) for x1, x2 in zip(nbrs1, nbrs_1)]
-    JI2 = [JaccardIndex(x1, x2) for x1, x2 in zip(nbrs2, nbrs_2)]
-    JI3 = [JaccardIndex(x1, x2) for x1, x2 in zip(nbrs3, nbrs_3)]
-    print(np.mean(JI1), np.mean(JI2), np.mean(JI3))
-    return (np.mean(JI1) + np.mean(JI2)) / 2
-
-
-def k_neigh_preds(
-    latent1, latent2, latent, joint_data, batchid, nn, metric="minkowski", n_jobs=8
-):
-    """
-    This function assumes joint_data has batch 0 before batch 1 and in same order as latent1, latent2
-    """
-    b1_data = joint_data[batchid == 0]
-    b2_data = joint_data[batchid == 1]
-    data = [b1_data, b2_data]
-    latents = [latent1, latent2]
-
-    i = 0
-    error_diff = 0
-    for l, d in zip(latents, data):
-        # Single fit latent space
-        X_train, X_test, y_train, y_test = train_test_split(
-            l, d, test_size=0.33, random_state=42
-        )
-        neigh = KNeighborsRegressor(n_neighbors=nn, n_jobs=8, weights="distance")
-        neigh.fit(X_train, y_train)
-        y_pred_single = neigh.predict(X_test)
-        error_single = np.mean(np.square(y_test - y_pred_single))
-
-        # Joint latent space
-        X_train, X_test, y_train, y_test = train_test_split(
-            latent[batchid == i], d, test_size=0.33, random_state=42
-        )
-        neigh.fit(X_train, y_train)
-        y_pred_joint = neigh.predict(X_test)
-        error_joint = np.mean(np.square(y_test - y_pred_joint))
-
-        error_diff += error_single - error_joint
-        i += 1
-
-    return error_diff
 
 
 def seurat_v3_highly_variable_genes(adata, n_top_genes=4000, use_lowess=False):
