@@ -3,16 +3,16 @@
 ## Notebooks
 
 ### 1. `sln_all_de-new.ipynb`
-Produces Figure 4 and Supplementary Figure 12.
+Produces Figure 4 and Supplementary Figure 4.
 
 ### 2. `sln_111_replicates-union.ipynb`
-Produces supplementary figure 11f.
+Produces Extended Data Figure 6f.
 
 ### 3. `sln_111_replicates.ipynb`
-Produces supplementary figure 11a,c,d,e.
+Produces Extended Data Figure 6a,c,d,e.
 
 ### 4. `spleen_lymph_206_DE.ipynb`
-Produces supplementary figure 11b.
+Produces Extended Data Figure 6b.
 
 ## Scripts
 
