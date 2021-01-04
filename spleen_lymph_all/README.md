@@ -16,3 +16,6 @@ Produces Supplementary Figure 5a-d and a Vision object that can be explored inte
 
 ### 5. `comparative_analysis/LibrarySize_FeatureAutocorrelation.ipynb`
 Produces Supplementary Figures 9a,b and 10a-i.
+
+### 6. `archetypes/archetypes.ipynb`
+Produces Extended Data Figures 8 and 9
