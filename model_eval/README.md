@@ -15,6 +15,9 @@ Produces Supplementary Figure 9c-e.
 Produces Supplementary Figure 11
 
 ### 5. `ppc_pbmc_malt_slnd1_111-totalVI_params.ipynb`
-Produces Supplementary Figure 8
+Produces Supplementary Figure 8a,b
+
+### 6. `denoising_stability.ipynb`
+Produces Supplementary Figure 8d,e
 
 Models produced with these notebooks are stored in `saved_models`. If `overwrite=False` in the notebooks, the saved models are used.
