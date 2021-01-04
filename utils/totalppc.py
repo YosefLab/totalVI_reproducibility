@@ -10,6 +10,8 @@ import sparse
 import tempfile
 import collections
 import os
+from numba import jit
+from functools import partial
 
 
 class FileDict(collections.abc.MutableMapping):
@@ -264,6 +266,37 @@ class TotalPosteriorPredictiveCheck:
 
         self.metrics["dropout_ratio"] = df
 
+    def store_schpf_samples(self, train_data, key="scHPF", **kwargs):
+
+        from schpf import scHPF
+        from scipy.sparse import coo_matrix
+
+        train_data = coo_matrix(train_data)
+
+        model = scHPF(**kwargs)
+        model.fit(train_data)
+        self.models[key] = model
+
+        data = coo_matrix(self.raw_counts.todense())
+        model.project(data, replace=True)  # replaces theta attr
+
+        # from https://github.com/simslab/scHPF/issues/13
+        # sample an arbitrary number of samples (here 5) from variational distributions
+        theta_sample = model.theta.sample(
+            self.n_samples
+        )  # has shape (ncells, nfactors, nsamples)
+        beta_sample = model.beta.sample(
+            self.n_samples
+        )  # has shape (ngenes, nfactors, nsamples)
+
+        # calculate the Poisson rate and sample
+        # have to do some reshaping first--a more elegant way probably exists, but this works
+        # both rate and pois_samples have shape (ncells, ngenes, nsamples)
+        rate = np.matmul(np.moveaxis(beta_sample, -1, 0), theta_sample.T).T
+        pois_samples = np.random.poisson(rate)
+
+        self.posterior_predictive_samples[key] = sparse.COO(pois_samples)
+
     def store_fa_samples(
         self,
         train_data,
@@ -350,6 +383,7 @@ class TotalPosteriorPredictiveCheck:
             x_samples[:, :, i] = x_sample + fa.mean_
 
         reconstruction = x_samples
+        # reconstruction = _fa_posterior_sampler(fa.n_components, fa.components_, fa.noise_variance_, fa.mean_, self.n_samples, self.raw_counts.shape[0], z_cov, z_mean, self.raw_counts.shape[1]):
 
         if normalization == "log":
             reconstruction = np.exp(reconstruction) - 1
@@ -496,3 +530,40 @@ class TotalPosteriorPredictiveCheck:
                 "total": cal_error_total,
             }
         self.metrics["calibration"] = pd.DataFrame.from_dict(model_cal)
+
+
+@partial(jit, nopython=True, cache=True)
+def swap(x, t_args):
+    return np.transpose(x, t_args)
+
+
+@jit(nopython=True, cache=True)
+def _fa_posterior_sampler(
+    fa_n_comps,
+    fa_comps,
+    fa_noise_var,
+    fa_mean,
+    n_samples,
+    n_cells,
+    z_cov,
+    z_mean,
+    n_feats,
+):
+    # sample z's
+    z_samples = np.random.multivariate_normal(
+        np.zeros(fa_n_comps, dtype=np.float32), cov=z_cov, size=(n_cells, n_samples),
+    )
+    # cells by n_components by posterior samples
+    z_samples = swap(z_samples, (1, 2))
+    # add mean to all samples
+    z_samples += z_mean[:, :, np.newaxis]
+
+    x_samples = np.zeros((n_cells, n_feats, n_samples), dtype=np.float32,)
+    for i in range(n_samples):
+        x_mean = z_samples[:, :, i] @ fa_comps  # same as np.matmul
+        x_sample = np.random.normal(x_mean, scale=np.sqrt(fa_noise_var))
+        # add back feature means
+        x_samples[:, :, i] = x_sample + fa_mean
+
+    return x_samples
+
