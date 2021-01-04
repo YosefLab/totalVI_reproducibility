@@ -20,5 +20,8 @@ Produces Supplementary Figures 9a,b and 10a-i.
 ### 6. `archetypes/archetypes.ipynb`
 Produces Extended Data Figures 8 and 9
 
-###7. `make_sln_all_umap-union.ipynb`
+### 7. `make_sln_all_umap-union.ipynb`
 Produces Supplementary Figure 7
+
+### 8. `make_sln_all_umap.ipynb`
+Produces Figure 4a and Extended Data Figure 6
