@@ -4,7 +4,7 @@ This repository contains the code to reproduce the analyses performed in the man
 
 The code here requires the versions of the packages specified in the `requirements.txt` file. We have updated the API of the `scVI` package so not all code is guaranteed to work with the latest version of this package.
 
-**We strongly recommend using totalVI through the [`scvi-tools`](https://www.scvi-tools.org/en/stable/) package.**
+**We strongly recommend using totalVI through the [`scvi-tools`](https://www.scvi-tools.org/) package.**
 
 We also host the data used in the manuscript in the AnnData format here in the `data` directory. 
 
